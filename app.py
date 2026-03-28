@@ -167,24 +167,26 @@ def fetch_all_pages(url, params, max_retries=3):
     return all_data
 
 
-@st.cache_data(ttl=7200, show_spinner=False)
-def fetch_all_data(date_start, date_end):
-    """Fetch data from all ad accounts. Cached for 2 hours."""
+@st.cache_data(show_spinner=False)
+def fetch_all_data():
+    """Fetch all data from all ad accounts. Cached until manually cleared."""
     all_insights = []
     all_daily = []
+    full_start = "2025-01-01"
+    full_end = datetime.now().strftime("%Y-%m-%d")
     date_90_ago = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
 
     progress = st.progress(0, text="Cargando datos de Meta...")
     for i, (account_id, account_name) in enumerate(AD_ACCOUNTS.items()):
         progress.progress((i) / len(AD_ACCOUNTS), text=f"Cargando {account_name}...")
 
-        # Monthly insights
+        # Monthly insights — full range
         insights = fetch_all_pages(
             f"{BASE_URL}/{account_id}/insights",
             {
                 "fields": "campaign_id,campaign_name,objective,spend,impressions,reach,clicks,actions",
                 "level": "campaign",
-                "time_range": json.dumps({"since": date_start, "until": date_end}),
+                "time_range": json.dumps({"since": full_start, "until": full_end}),
                 "time_increment": "monthly",
                 "limit": 500,
                 "access_token": TOKEN,
@@ -196,12 +198,12 @@ def fetch_all_data(date_start, date_end):
 
         time.sleep(2)
 
-        # Daily insights (last 90 days) — account level (no campaign breakdown) to reduce API load
+        # Daily insights (last 90 days) — account level to reduce API load
         daily = fetch_all_pages(
             f"{BASE_URL}/{account_id}/insights",
             {
                 "fields": "spend,impressions,clicks,actions",
-                "time_range": json.dumps({"since": date_90_ago, "until": date_end}),
+                "time_range": json.dumps({"since": date_90_ago, "until": full_end}),
                 "time_increment": 1,
                 "limit": 100,
                 "access_token": TOKEN,
@@ -327,16 +329,22 @@ def main():
 
     if st.sidebar.button("🔄 Actualizar datos", type="primary", use_container_width=True):
         st.cache_data.clear()
+        st.rerun()
 
-    # ── Fetch & Process ──
-    raw_insights, raw_daily = fetch_all_data(date_start_str, date_end_str)
+    # ── Fetch & Process (always full range, filter locally) ──
+    raw_insights, raw_daily = fetch_all_data()
 
     if not raw_insights:
-        st.warning("No se encontraron datos para el período seleccionado.")
+        st.warning("No se encontraron datos. Pulsa 'Actualizar datos'.")
         st.stop()
 
     df = build_dataframe(raw_insights)
     daily_df = build_daily_df(raw_daily)
+
+    # Filter by selected date range
+    df = df[df["date_start"].between(pd.Timestamp(date_start_str), pd.Timestamp(date_end_str))]
+    if not daily_df.empty:
+        daily_df = daily_df[daily_df["date"].between(date_start_str, date_end_str)]
 
     # Sidebar filters
     all_types = sorted(df["tipo"].unique())
