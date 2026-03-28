@@ -10,11 +10,11 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
-from collections import defaultdict
+from io import StringIO
 
 # ── Page Config ─────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="BLPS Meta Ads Dashboard",
+    page_title="BLPS Dashboard",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -22,13 +22,10 @@ st.set_page_config(
 
 # ── Auth ────────────────────────────────────────────────────────────────────
 def check_password():
-    """Simple password gate."""
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
-
     if st.session_state.authenticated:
         return True
-
     st.title("🔒 BLPS Dashboard")
     password = st.text_input("Contraseña", type="password")
     if st.button("Entrar", type="primary"):
@@ -55,26 +52,17 @@ AD_ACCOUNTS = {
 API_VERSION = "v22.0"
 BASE_URL = f"https://graph.facebook.com/{API_VERSION}"
 
-# ── Colors ──────────────────────────────────────────────────────────────────
 TYPE_COLORS = {
-    "Instant Form": "#FF6384",
-    "Landing Page": "#36A2EB",
-    "Sales / Conversiones": "#FFCE56",
-    "Mensajes IG/DM": "#4BC0C0",
-    "WhatsApp": "#25D366",
-    "Brand / Awareness": "#9966FF",
-    "Tráfico": "#FF9F40",
-    "Leads (sin clasificar)": "#C9CBCF",
-    "Engagement (sin clasificar)": "#E7E9ED",
-    "Otro": "#999999",
+    "Instant Form": "#FF6384", "Landing Page": "#36A2EB",
+    "Sales / Conversiones": "#FFCE56", "Mensajes IG/DM": "#4BC0C0",
+    "WhatsApp": "#25D366", "Brand / Awareness": "#9966FF",
+    "Tráfico": "#FF9F40", "Leads (sin clasificar)": "#C9CBCF",
+    "Engagement (sin clasificar)": "#E7E9ED", "Otro": "#999999",
 }
 DOCTOR_COLORS = {
-    "Dr. Simmons": "#FF6384",
-    "Dr. Flores": "#36A2EB",
-    "Dra. Sophie": "#FFCE56",
-    "Dr. Salgado": "#4BC0C0",
-    "Clínica (BLPS)": "#9966FF",
-    "Mix Doctores": "#FF9F40",
+    "Dr. Simmons": "#FF6384", "Dr. Flores": "#36A2EB",
+    "Dra. Sophie": "#FFCE56", "Dr. Salgado": "#4BC0C0",
+    "Clínica (BLPS)": "#9966FF", "Mix Doctores": "#FF9F40",
     "Sin clasificar": "#C9CBCF",
 }
 
@@ -147,20 +135,15 @@ CACHE_URL = "https://raw.githubusercontent.com/ahdez88/blps-dash/master/data_cac
 
 @st.cache_data(show_spinner=False)
 def load_cached_data():
-    """Load pre-built data cache from the repo. Instant load, no API calls."""
-    # Try loading from local file first (development)
     local_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data_cache.json")
     if os.path.exists(local_path):
         with open(local_path, "r", encoding="utf-8") as f:
             cache = json.load(f)
         return cache.get("insights", []), cache.get("last_updated", "unknown")
-
-    # Fallback: fetch from GitHub raw URL
     resp = requests.get(CACHE_URL)
     if resp.status_code == 200:
         cache = resp.json()
         return cache.get("insights", []), cache.get("last_updated", "unknown")
-
     st.error("No se pudo cargar el caché de datos.")
     return [], "error"
 
@@ -176,8 +159,7 @@ def extract_leads(actions):
     return 0
 
 
-def build_dataframe(insights):
-    """Convert raw insights into a classified DataFrame."""
+def build_ads_dataframe(insights):
     rows = []
     for row in insights:
         name = row.get("campaign_name", "")
@@ -189,7 +171,6 @@ def build_dataframe(insights):
         leads = extract_leads(row.get("actions"))
         date_start = row.get("date_start", "")
         month = date_start[:7] if date_start else "unknown"
-
         rows.append({
             "campaign_id": row.get("campaign_id", ""),
             "campaign": name,
@@ -208,30 +189,65 @@ def build_dataframe(insights):
     df = pd.DataFrame(rows)
     if not df.empty:
         df["date_start"] = pd.to_datetime(df["date_start"], errors="coerce")
-        # Week: Monday to Sunday (ISO)
         df["week"] = df["date_start"].dt.to_period("W-SUN").astype(str)
     return df
 
 
+def build_sales_dataframe(df_raw):
+    """Process raw sales CSV into an enriched DataFrame."""
+    df = df_raw.copy()
+    df["Sales Dates"] = pd.to_datetime(df["Sales Dates"], errors="coerce")
+    df["Contact Date"] = pd.to_datetime(df["Contact Date"], errors="coerce")
+    df["month"] = df["Sales Dates"].dt.to_period("M").astype(str)
+    df["week"] = df["Sales Dates"].dt.to_period("W-SUN").astype(str)
+    df["days_to_close"] = (df["Sales Dates"] - df["Contact Date"]).dt.days
+    # Classify procedure groups
+    df["proc_group"] = df["Sales W Payments"].apply(classify_procedure)
+    return df
 
 
-# ── Dashboard UI ────────────────────────────────────────────────────────────
+def classify_procedure(name):
+    """Group procedures into main categories."""
+    n = name.upper() if isinstance(name, str) else ""
+    if "BBL" in n or "FAT TRANSFER TO BUTTOCKS" in n:
+        return "BBL"
+    if "ABDOMINOPLASTY" in n or "TUMMY" in n:
+        return "Tummy Tuck"
+    if "LIPO" in n and "BBL" not in n and "FAT TRANSFER" not in n:
+        return "Liposuction"
+    if "BREAST LIFT" in n or "MASTOPEXY" in n:
+        return "Breast Lift"
+    if "BREAST AUGMENT" in n:
+        return "Breast Augmentation"
+    if "BREAST REDUC" in n:
+        return "Breast Reduction"
+    if "MOMMY" in n or "MUMMY" in n:
+        return "Mommy Makeover"
+    if "J-PLASMA" in n or "J PLASMA" in n or "J- PLASMA" in n:
+        return "J-Plasma"
+    if "RHINO" in n:
+        return "Rhinoplasty"
+    if "FACELIFT" in n or "FACE LIFT" in n:
+        return "Facelift"
+    if "NECK" in n:
+        return "Neck Lift"
+    if "BROW" in n or "EYE LIFT" in n or "BLEPHARO" in n:
+        return "Face (otros)"
+    if "BIOPOLYMER" in n:
+        return "Biopolymer Removal"
+    return "Otros"
 
-def main():
-    if not TOKEN:
-        st.error("⚠️ No se encontró META_ACCESS_TOKEN. Configúralo en Secrets.")
-        st.stop()
 
-    # ── Sidebar ──
+# ── Sidebar (shared) ───────────────────────────────────────────────────────
+
+def render_sidebar():
+    """Render sidebar with date filters. Returns date_start_str, date_end_str."""
     st.sidebar.image("https://beautylandplasticsurgery.com/wp-content/uploads/2024/07/logo-beautyland.webp", width=200)
     st.sidebar.title("Filtros")
 
     today = datetime.now().date()
-    # Monday of current week
     this_monday = today - timedelta(days=today.weekday())
-    # First day of current month
     first_of_month = today.replace(day=1)
-    # First day of previous month
     prev_month = (first_of_month - timedelta(days=1))
     first_of_prev_month = prev_month.replace(day=1)
 
@@ -258,55 +274,32 @@ def main():
         date_start, date_end = presets[preset]
         st.sidebar.caption(f"📅 {date_start.strftime('%d/%m/%Y')} → {date_end.strftime('%d/%m/%Y')}")
 
-    date_start_str = date_start.strftime("%Y-%m-%d")
-    date_end_str = date_end.strftime("%Y-%m-%d")
-
     if st.sidebar.button("🔄 Recargar caché", type="primary", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
 
-    # ── Load from pre-built cache (instant, no API calls) ──
-    raw_insights, last_updated = load_cached_data()
+    return date_start.strftime("%Y-%m-%d"), date_end.strftime("%Y-%m-%d")
 
-    if not raw_insights:
-        st.warning("No se encontraron datos. Ejecuta update_cache.py localmente.")
-        st.stop()
 
-    st.sidebar.caption(f"Datos actualizados: {last_updated}")
+# ── Tab: Meta Ads ───────────────────────────────────────────────────────────
 
-    df = build_dataframe(raw_insights)
+def render_ads_tab(df, daily_df, date_start_str, date_end_str):
+    """Render the Meta Ads performance tab."""
 
-    # Filter by selected date range
-    df = df[df["date_start"].between(pd.Timestamp(date_start_str), pd.Timestamp(date_end_str))]
-
-    # Build daily df from the same data (filtered to last 90 days for trend chart)
-    date_90_ago = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
-    df_recent = df[df["date_start"] >= pd.Timestamp(date_90_ago)].copy()
-    df_recent["date"] = df_recent["date_start"].dt.strftime("%Y-%m-%d")
-    daily_df = df_recent.groupby("date", as_index=False).agg(
-        spend=("spend", "sum"), clicks=("clicks", "sum"), leads=("leads", "sum")
-    ).sort_values("date")
-
-    # Sidebar filters
+    # Sidebar filters for ads
     all_types = sorted(df["tipo"].unique())
     all_doctors = sorted(df["pagina"].unique())
-
     selected_types = st.sidebar.multiselect("Tipo de campaña", all_types, default=all_types)
     selected_doctors = st.sidebar.multiselect("Página / Doctor", all_doctors, default=all_doctors)
 
-    # Apply filters
     mask = df["tipo"].isin(selected_types) & df["pagina"].isin(selected_doctors)
-    df_filtered = df[mask]
+    df_f = df[mask]
 
-    # ── Header ──
-    st.title("📊 Beautyland Plastic Surgery — Meta Ads Dashboard")
-    st.caption(f"Período: {date_start_str} → {date_end_str}  |  {len(df_filtered['campaign_id'].unique())} campañas  |  6 cuentas publicitarias")
-
-    # ── KPI Cards ──
-    total_spend = df_filtered["spend"].sum()
-    total_impressions = df_filtered["impressions"].sum()
-    total_clicks = df_filtered["clicks"].sum()
-    total_leads = df_filtered["leads"].sum()
+    # KPIs
+    total_spend = df_f["spend"].sum()
+    total_impressions = df_f["impressions"].sum()
+    total_clicks = df_f["clicks"].sum()
+    total_leads = df_f["leads"].sum()
     cpm = (total_spend / total_impressions * 1000) if total_impressions else 0
     cpc = (total_spend / total_clicks) if total_clicks else 0
     ctr = (total_clicks / total_impressions * 100) if total_impressions else 0
@@ -324,179 +317,340 @@ def main():
 
     st.divider()
 
-    # ── Donut Charts ──
+    # Donut Charts
     col1, col2 = st.columns(2)
-
     with col1:
         st.subheader("Inversión por Tipo de Campaña")
-        type_df = df_filtered.groupby("tipo", as_index=False)["spend"].sum().sort_values("spend", ascending=False)
+        type_df = df_f.groupby("tipo", as_index=False)["spend"].sum().sort_values("spend", ascending=False)
         type_df["pct"] = (type_df["spend"] / type_df["spend"].sum() * 100).round(1)
         type_df["label"] = type_df.apply(lambda r: f"{r['tipo']}<br>{r['pct']}% — ${r['spend']:,.0f}", axis=1)
-        color_map = {t: TYPE_COLORS.get(t, "#888") for t in type_df["tipo"]}
-        fig_type = px.pie(type_df, values="spend", names="tipo", hole=0.45,
-                          color="tipo", color_discrete_map=color_map)
-        fig_type.update_traces(
-            text=type_df["label"], textinfo="text", textposition="outside",
-            textfont_size=13, outsidetextfont_size=13,
-        )
-        fig_type.update_layout(showlegend=False, margin=dict(t=40, b=80, l=60, r=60), height=500)
-        st.plotly_chart(fig_type, use_container_width=True)
+        fig = px.pie(type_df, values="spend", names="tipo", hole=0.45,
+                     color="tipo", color_discrete_map=TYPE_COLORS)
+        fig.update_traces(text=type_df["label"], textinfo="text", textposition="outside",
+                          textfont_size=13, outsidetextfont_size=13)
+        fig.update_layout(showlegend=False, margin=dict(t=40, b=80, l=60, r=60), height=500)
+        st.plotly_chart(fig, use_container_width=True)
 
     with col2:
         st.subheader("Inversión por Página / Doctor")
-        doc_df = df_filtered.groupby("pagina", as_index=False)["spend"].sum().sort_values("spend", ascending=False)
+        doc_df = df_f.groupby("pagina", as_index=False)["spend"].sum().sort_values("spend", ascending=False)
         doc_df["pct"] = (doc_df["spend"] / doc_df["spend"].sum() * 100).round(1)
         doc_df["label"] = doc_df.apply(lambda r: f"{r['pagina']}<br>{r['pct']}% — ${r['spend']:,.0f}", axis=1)
-        color_map_doc = {d: DOCTOR_COLORS.get(d, "#888") for d in doc_df["pagina"]}
-        fig_doc = px.pie(doc_df, values="spend", names="pagina", hole=0.45,
-                         color="pagina", color_discrete_map=color_map_doc)
-        fig_doc.update_traces(
-            text=doc_df["label"], textinfo="text", textposition="outside",
-            textfont_size=13, outsidetextfont_size=13,
-        )
-        fig_doc.update_layout(showlegend=False, margin=dict(t=40, b=80, l=60, r=60), height=500)
-        st.plotly_chart(fig_doc, use_container_width=True)
+        fig2 = px.pie(doc_df, values="spend", names="pagina", hole=0.45,
+                      color="pagina", color_discrete_map=DOCTOR_COLORS)
+        fig2.update_traces(text=doc_df["label"], textinfo="text", textposition="outside",
+                           textfont_size=13, outsidetextfont_size=13)
+        fig2.update_layout(showlegend=False, margin=dict(t=40, b=80, l=60, r=60), height=500)
+        st.plotly_chart(fig2, use_container_width=True)
 
     st.divider()
 
-    # ── Breakdown Tables ──
+    # Breakdown Tables
     col_t, col_d = st.columns(2)
-
     with col_t:
         st.subheader("Desglose por Tipo de Campaña")
-        type_table = df_filtered.groupby("tipo", as_index=False).agg(
-            Inversión=("spend", "sum"),
-            Impresiones=("impressions", "sum"),
-            Clicks=("clicks", "sum"),
-            Leads=("leads", "sum"),
+        tt = df_f.groupby("tipo", as_index=False).agg(
+            Inversión=("spend", "sum"), Impresiones=("impressions", "sum"),
+            Clicks=("clicks", "sum"), Leads=("leads", "sum"),
         ).sort_values("Inversión", ascending=False)
-        type_table["% Presup."] = (type_table["Inversión"] / type_table["Inversión"].sum() * 100).round(1)
-        type_table["CTR"] = (type_table["Clicks"] / type_table["Impresiones"] * 100).round(2)
-        type_table["CPL"] = type_table.apply(lambda r: round(r["Inversión"] / r["Leads"], 2) if r["Leads"] > 0 else 0, axis=1)
-        type_table["Inversión"] = type_table["Inversión"].apply(lambda x: f"${x:,.0f}")
-        type_table["% Presup."] = type_table["% Presup."].apply(lambda x: f"{x}%")
-        type_table["CTR"] = type_table["CTR"].apply(lambda x: f"{x}%")
-        type_table["CPL"] = type_table["CPL"].apply(lambda x: f"${x:,.2f}")
-        type_table["Impresiones"] = type_table["Impresiones"].apply(lambda x: f"{x:,}")
-        type_table["Clicks"] = type_table["Clicks"].apply(lambda x: f"{x:,}")
-        type_table["Leads"] = type_table["Leads"].apply(lambda x: f"{x:,}")
-        st.dataframe(type_table.rename(columns={"tipo": "Tipo"}), use_container_width=True, hide_index=True)
+        tt["% Presup."] = (tt["Inversión"] / tt["Inversión"].sum() * 100).round(1)
+        tt["CTR"] = (tt["Clicks"] / tt["Impresiones"] * 100).round(2)
+        tt["CPL"] = tt.apply(lambda r: round(r["Inversión"] / r["Leads"], 2) if r["Leads"] > 0 else 0, axis=1)
+        for c in ["Inversión"]:
+            tt[c] = tt[c].apply(lambda x: f"${x:,.0f}")
+        tt["% Presup."] = tt["% Presup."].apply(lambda x: f"{x}%")
+        tt["CTR"] = tt["CTR"].apply(lambda x: f"{x}%")
+        tt["CPL"] = tt["CPL"].apply(lambda x: f"${x:,.2f}")
+        for c in ["Impresiones", "Clicks", "Leads"]:
+            tt[c] = tt[c].apply(lambda x: f"{x:,}")
+        st.dataframe(tt.rename(columns={"tipo": "Tipo"}), use_container_width=True, hide_index=True)
 
     with col_d:
         st.subheader("Desglose por Página / Doctor")
-        doc_table = df_filtered.groupby("pagina", as_index=False).agg(
-            Inversión=("spend", "sum"),
-            Impresiones=("impressions", "sum"),
-            Clicks=("clicks", "sum"),
-            Leads=("leads", "sum"),
+        dt = df_f.groupby("pagina", as_index=False).agg(
+            Inversión=("spend", "sum"), Impresiones=("impressions", "sum"),
+            Clicks=("clicks", "sum"), Leads=("leads", "sum"),
         ).sort_values("Inversión", ascending=False)
-        doc_table["% Presup."] = (doc_table["Inversión"] / doc_table["Inversión"].sum() * 100).round(1)
-        doc_table["CTR"] = (doc_table["Clicks"] / doc_table["Impresiones"] * 100).round(2)
-        doc_table["CPL"] = doc_table.apply(lambda r: round(r["Inversión"] / r["Leads"], 2) if r["Leads"] > 0 else 0, axis=1)
-        doc_table["Inversión"] = doc_table["Inversión"].apply(lambda x: f"${x:,.0f}")
-        doc_table["% Presup."] = doc_table["% Presup."].apply(lambda x: f"{x}%")
-        doc_table["CTR"] = doc_table["CTR"].apply(lambda x: f"{x}%")
-        doc_table["CPL"] = doc_table["CPL"].apply(lambda x: f"${x:,.2f}")
-        doc_table["Impresiones"] = doc_table["Impresiones"].apply(lambda x: f"{x:,}")
-        doc_table["Clicks"] = doc_table["Clicks"].apply(lambda x: f"{x:,}")
-        doc_table["Leads"] = doc_table["Leads"].apply(lambda x: f"{x:,}")
-        st.dataframe(doc_table.rename(columns={"pagina": "Página"}), use_container_width=True, hide_index=True)
+        dt["% Presup."] = (dt["Inversión"] / dt["Inversión"].sum() * 100).round(1)
+        dt["CTR"] = (dt["Clicks"] / dt["Impresiones"] * 100).round(2)
+        dt["CPL"] = dt.apply(lambda r: round(r["Inversión"] / r["Leads"], 2) if r["Leads"] > 0 else 0, axis=1)
+        dt["Inversión"] = dt["Inversión"].apply(lambda x: f"${x:,.0f}")
+        dt["% Presup."] = dt["% Presup."].apply(lambda x: f"{x}%")
+        dt["CTR"] = dt["CTR"].apply(lambda x: f"{x}%")
+        dt["CPL"] = dt["CPL"].apply(lambda x: f"${x:,.2f}")
+        for c in ["Impresiones", "Clicks", "Leads"]:
+            dt[c] = dt[c].apply(lambda x: f"{x:,}")
+        st.dataframe(dt.rename(columns={"pagina": "Página"}), use_container_width=True, hide_index=True)
 
     st.divider()
 
-    # ── Time Period Toggle ──
-    time_mode = st.radio("Agrupar por:", ["Mensual", "Semanal"], horizontal=True, key="time_mode")
+    # Time charts
+    time_mode = st.radio("Agrupar por:", ["Mensual", "Semanal"], horizontal=True, key="ads_time_mode")
     time_col = "month" if time_mode == "Mensual" else "week"
     time_label = "Mes" if time_mode == "Mensual" else "Semana"
 
-    # ── Stacked Bar: by Type ──
     st.subheader(f"Inversión {time_mode} por Tipo de Campaña")
-    time_type = df_filtered.groupby([time_col, "tipo"], as_index=False)["spend"].sum().sort_values(time_col)
-    fig_mt = px.bar(time_type, x=time_col, y="spend", color="tipo",
-                    color_discrete_map=TYPE_COLORS,
+    fig_mt = px.bar(df_f.groupby([time_col, "tipo"], as_index=False)["spend"].sum().sort_values(time_col),
+                    x=time_col, y="spend", color="tipo", color_discrete_map=TYPE_COLORS,
                     labels={time_col: time_label, "spend": "Inversión ($)", "tipo": "Tipo"})
     fig_mt.update_layout(barmode="stack", height=450, margin=dict(t=20))
     st.plotly_chart(fig_mt, use_container_width=True)
 
-    # ── Stacked Bar: by Doctor ──
     st.subheader(f"Inversión {time_mode} por Página / Doctor")
-    time_doc = df_filtered.groupby([time_col, "pagina"], as_index=False)["spend"].sum().sort_values(time_col)
-    fig_md = px.bar(time_doc, x=time_col, y="spend", color="pagina",
-                    color_discrete_map=DOCTOR_COLORS,
+    fig_md = px.bar(df_f.groupby([time_col, "pagina"], as_index=False)["spend"].sum().sort_values(time_col),
+                    x=time_col, y="spend", color="pagina", color_discrete_map=DOCTOR_COLORS,
                     labels={time_col: time_label, "spend": "Inversión ($)", "pagina": "Página"})
     fig_md.update_layout(barmode="stack", height=450, margin=dict(t=20))
     st.plotly_chart(fig_md, use_container_width=True)
 
-    # ── Totals ──
     col_s, col_l = st.columns(2)
-    time_agg = df_filtered.groupby(time_col, as_index=False).agg(spend=("spend", "sum"), leads=("leads", "sum")).sort_values(time_col)
-
+    time_agg = df_f.groupby(time_col, as_index=False).agg(spend=("spend", "sum"), leads=("leads", "sum")).sort_values(time_col)
     with col_s:
         st.subheader(f"Inversión {time_mode} Total")
-        fig_s = px.bar(time_agg, x=time_col, y="spend",
-                       labels={time_col: time_label, "spend": "Inversión ($)"})
+        fig_s = px.bar(time_agg, x=time_col, y="spend", labels={time_col: time_label, "spend": "Inversión ($)"})
         fig_s.update_traces(marker_color="#4fc3f7")
         fig_s.update_layout(height=350, margin=dict(t=20))
         st.plotly_chart(fig_s, use_container_width=True)
-
     with col_l:
-        st.subheader(f"Leads {time_mode}es" if time_mode == "Mensual" else "Leads Semanales")
-        fig_l = px.bar(time_agg, x=time_col, y="leads",
-                       labels={time_col: time_label, "leads": "Leads"})
+        st.subheader("Leads Semanales" if time_mode == "Semanal" else "Leads Mensuales")
+        fig_l = px.bar(time_agg, x=time_col, y="leads", labels={time_col: time_label, "leads": "Leads"})
         fig_l.update_traces(marker_color="#4caf50")
         fig_l.update_layout(height=350, margin=dict(t=20))
         st.plotly_chart(fig_l, use_container_width=True)
 
     st.divider()
 
-    # ── Daily Trend ──
+    # Daily Trend
     if not daily_df.empty:
         st.subheader("Tendencia Diaria — Últimos 90 Días")
         fig_daily = go.Figure()
-        fig_daily.add_trace(go.Scatter(
-            x=daily_df["date"], y=daily_df["spend"],
-            name="Inversión ($)", line=dict(color="#4fc3f7"), fill="tozeroy",
-            fillcolor="rgba(79,195,247,0.1)", yaxis="y"
-        ))
-        fig_daily.add_trace(go.Scatter(
-            x=daily_df["date"], y=daily_df["leads"],
-            name="Leads", line=dict(color="#4caf50"), fill="tozeroy",
-            fillcolor="rgba(76,175,80,0.1)", yaxis="y2"
-        ))
-        fig_daily.update_layout(
-            height=400, margin=dict(t=20),
-            yaxis=dict(title="Inversión ($)", side="left"),
-            yaxis2=dict(title="Leads", side="right", overlaying="y"),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02),
-            hovermode="x unified",
-        )
+        fig_daily.add_trace(go.Scatter(x=daily_df["date"], y=daily_df["spend"], name="Inversión ($)",
+                                       line=dict(color="#4fc3f7"), fill="tozeroy",
+                                       fillcolor="rgba(79,195,247,0.1)", yaxis="y"))
+        fig_daily.add_trace(go.Scatter(x=daily_df["date"], y=daily_df["leads"], name="Leads",
+                                       line=dict(color="#4caf50"), fill="tozeroy",
+                                       fillcolor="rgba(76,175,80,0.1)", yaxis="y2"))
+        fig_daily.update_layout(height=400, margin=dict(t=20),
+                                yaxis=dict(title="Inversión ($)", side="left"),
+                                yaxis2=dict(title="Leads", side="right", overlaying="y"),
+                                legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                                hovermode="x unified")
         st.plotly_chart(fig_daily, use_container_width=True)
 
     st.divider()
 
-    # ── Top Campaigns Table ──
+    # Top Campaigns
     st.subheader("Top 30 Campañas por Inversión")
-    camp_df = df_filtered.groupby(["campaign_id", "campaign", "tipo", "pagina"], as_index=False).agg(
-        Inversión=("spend", "sum"),
-        Impresiones=("impressions", "sum"),
-        Clicks=("clicks", "sum"),
-        Leads=("leads", "sum"),
+    camp = df_f.groupby(["campaign_id", "campaign", "tipo", "pagina"], as_index=False).agg(
+        Inversión=("spend", "sum"), Impresiones=("impressions", "sum"),
+        Clicks=("clicks", "sum"), Leads=("leads", "sum"),
     ).sort_values("Inversión", ascending=False).head(30)
-    camp_df["CPL"] = camp_df.apply(lambda r: round(r["Inversión"] / r["Leads"], 2) if r["Leads"] > 0 else 0, axis=1)
-    camp_display = camp_df[["campaign", "tipo", "pagina", "Inversión", "Impresiones", "Clicks", "Leads", "CPL"]].copy()
-    camp_display["Inversión"] = camp_display["Inversión"].apply(lambda x: f"${x:,.0f}")
-    camp_display["CPL"] = camp_display["CPL"].apply(lambda x: f"${x:,.2f}")
-    camp_display["Impresiones"] = camp_display["Impresiones"].apply(lambda x: f"{x:,}")
-    camp_display["Clicks"] = camp_display["Clicks"].apply(lambda x: f"{x:,}")
-    camp_display["Leads"] = camp_display["Leads"].apply(lambda x: f"{x:,}")
-    st.dataframe(
-        camp_display.rename(columns={"campaign": "Campaña", "tipo": "Tipo", "pagina": "Página"}),
-        use_container_width=True, hide_index=True, height=600
-    )
+    camp["CPL"] = camp.apply(lambda r: round(r["Inversión"] / r["Leads"], 2) if r["Leads"] > 0 else 0, axis=1)
+    cd = camp[["campaign", "tipo", "pagina", "Inversión", "Impresiones", "Clicks", "Leads", "CPL"]].copy()
+    cd["Inversión"] = cd["Inversión"].apply(lambda x: f"${x:,.0f}")
+    cd["CPL"] = cd["CPL"].apply(lambda x: f"${x:,.2f}")
+    for c in ["Impresiones", "Clicks", "Leads"]:
+        cd[c] = cd[c].apply(lambda x: f"{x:,}")
+    st.dataframe(cd.rename(columns={"campaign": "Campaña", "tipo": "Tipo", "pagina": "Página"}),
+                 use_container_width=True, hide_index=True, height=600)
 
-    # ── Footer ──
+
+# ── Tab: Ventas ─────────────────────────────────────────────────────────────
+
+def render_sales_tab(date_start_str, date_end_str):
+    """Render the Sales analysis tab."""
+
+    # Sales data management
+    if "sales_df" not in st.session_state:
+        st.session_state.sales_df = None
+
+    st.sidebar.divider()
+    st.sidebar.subheader("Datos de Ventas")
+    uploaded = st.sidebar.file_uploader("Cargar CSV de ventas", type="csv", key="sales_upload")
+
+    if uploaded is not None:
+        raw = pd.read_csv(uploaded, encoding="utf-8-sig")
+        st.session_state.sales_df = build_sales_dataframe(raw)
+        st.sidebar.success(f"Cargadas {len(raw):,} facturas")
+
+    df = st.session_state.sales_df
+
+    if df is None:
+        st.info("📂 Carga un archivo CSV de ventas desde la barra lateral para ver el análisis.\n\n"
+                "El archivo debe tener las columnas: Consultant, Invoice, Sales Dates, Contact, "
+                "Sales W Payments, Source, State, Q Signed, Q Approved, Contact Date, Sales")
+        return
+
+    # Filter by date range
+    df = df[df["Sales Dates"].between(pd.Timestamp(date_start_str), pd.Timestamp(date_end_str))]
+
+    if df.empty:
+        st.warning("No hay ventas en el período seleccionado.")
+        return
+
+    # ── KPIs ──
+    total_invoices = df["Invoice"].nunique()
+    total_procs = int(df["Sales"].sum())
+    procs_per_invoice = total_procs / total_invoices if total_invoices else 0
+    q_signed_pct = (df["Q Signed"].str.upper() == "YES").mean() * 100
+    q_approved_pct = (df["Q Approved"].str.upper() == "YES").mean() * 100
+    median_days = df["days_to_close"].median() if df["days_to_close"].notna().any() else 0
+
+    k1, k2, k3, k4, k5, k6 = st.columns(6)
+    k1.metric("Facturas", f"{total_invoices:,}")
+    k2.metric("Procedimientos", f"{total_procs:,}")
+    k3.metric("Procs/Factura", f"{procs_per_invoice:.2f}")
+    k4.metric("Q Signed", f"{q_signed_pct:.1f}%")
+    k5.metric("Q Approved", f"{q_approved_pct:.1f}%")
+    k6.metric("Mediana días cierre", f"{median_days:.0f}")
+
     st.divider()
-    st.caption(f"Beautyland Plastic Surgery — Dashboard generado desde Meta Marketing API  |  Última actualización: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+
+    # ── Donut: by Source and Procedure ──
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.subheader("Ventas por Fuente (Top 15)")
+        src = df.groupby("Source", as_index=False).agg(procs=("Sales", "sum")).sort_values("procs", ascending=False).head(15)
+        src["pct"] = (src["procs"] / src["procs"].sum() * 100).round(1)
+        src["label"] = src.apply(lambda r: f"{r['Source']}<br>{r['pct']}% ({r['procs']:,.0f})", axis=1)
+        fig_src = px.pie(src, values="procs", names="Source", hole=0.4)
+        fig_src.update_traces(text=src["label"], textinfo="text", textposition="outside",
+                              textfont_size=12, outsidetextfont_size=12)
+        fig_src.update_layout(showlegend=False, margin=dict(t=40, b=80, l=60, r=60), height=500)
+        st.plotly_chart(fig_src, use_container_width=True)
+
+    with col2:
+        st.subheader("Procedimientos más vendidos")
+        proc = df.groupby("proc_group", as_index=False).agg(procs=("Sales", "sum")).sort_values("procs", ascending=False)
+        proc["pct"] = (proc["procs"] / proc["procs"].sum() * 100).round(1)
+        proc["label"] = proc.apply(lambda r: f"{r['proc_group']}<br>{r['pct']}% ({r['procs']:,.0f})", axis=1)
+        fig_proc = px.pie(proc, values="procs", names="proc_group", hole=0.4)
+        fig_proc.update_traces(text=proc["label"], textinfo="text", textposition="outside",
+                               textfont_size=12, outsidetextfont_size=12)
+        fig_proc.update_layout(showlegend=False, margin=dict(t=40, b=80, l=60, r=60), height=500)
+        st.plotly_chart(fig_proc, use_container_width=True)
+
+    st.divider()
+
+    # ── Consultants / Sellers ──
+    st.subheader("Rendimiento por Vendedora")
+    sellers = df.groupby("Consultant", as_index=False).agg(
+        Facturas=("Invoice", "nunique"),
+        Procedimientos=("Sales", "sum"),
+        Aprobados=("Q Approved", lambda x: (x.str.upper() == "YES").sum()),
+    ).sort_values("Procedimientos", ascending=False)
+    sellers["% Aprobados"] = (sellers["Aprobados"] / sellers["Procedimientos"] * 100).round(1)
+    sellers["Procs/Factura"] = (sellers["Procedimientos"] / sellers["Facturas"]).round(2)
+    sellers["Procedimientos"] = sellers["Procedimientos"].astype(int)
+    sellers["Aprobados"] = sellers["Aprobados"].astype(int)
+    sellers["% Aprobados"] = sellers["% Aprobados"].apply(lambda x: f"{x}%")
+    st.dataframe(sellers.rename(columns={"Consultant": "Vendedora"}),
+                 use_container_width=True, hide_index=True)
+
+    st.divider()
+
+    # ── Time charts ──
+    time_mode = st.radio("Agrupar por:", ["Mensual", "Semanal"], horizontal=True, key="sales_time_mode")
+    time_col = "month" if time_mode == "Mensual" else "week"
+    time_label = "Mes" if time_mode == "Mensual" else "Semana"
+
+    col_s, col_p = st.columns(2)
+    time_agg = df.groupby(time_col, as_index=False).agg(
+        facturas=("Invoice", "nunique"), procs=("Sales", "sum")
+    ).sort_values(time_col)
+
+    with col_s:
+        st.subheader(f"Facturas {time_mode}es" if time_mode == "Mensual" else "Facturas Semanales")
+        fig = px.bar(time_agg, x=time_col, y="facturas", labels={time_col: time_label, "facturas": "Facturas"})
+        fig.update_traces(marker_color="#4fc3f7")
+        fig.update_layout(height=350, margin=dict(t=20))
+        st.plotly_chart(fig, use_container_width=True)
+
+    with col_p:
+        st.subheader(f"Procedimientos {time_mode}es" if time_mode == "Mensual" else "Procedimientos Semanales")
+        fig2 = px.bar(time_agg, x=time_col, y="procs", labels={time_col: time_label, "procs": "Procedimientos"})
+        fig2.update_traces(marker_color="#4caf50")
+        fig2.update_layout(height=350, margin=dict(t=20))
+        st.plotly_chart(fig2, use_container_width=True)
+
+    st.divider()
+
+    # ── By Source stacked ──
+    st.subheader(f"Ventas {time_mode}es por Fuente (Top 10)")
+    top_sources = df.groupby("Source")["Sales"].sum().nlargest(10).index.tolist()
+    df_top = df[df["Source"].isin(top_sources)]
+    src_time = df_top.groupby([time_col, "Source"], as_index=False)["Sales"].sum().sort_values(time_col)
+    fig_st = px.bar(src_time, x=time_col, y="Sales", color="Source",
+                    labels={time_col: time_label, "Sales": "Procedimientos", "Source": "Fuente"})
+    fig_st.update_layout(barmode="stack", height=450, margin=dict(t=20))
+    st.plotly_chart(fig_st, use_container_width=True)
+
+    # ── Geographic ──
+    st.subheader("Ventas por Estado (Top 15)")
+    states = df.groupby("State", as_index=False).agg(
+        Procedimientos=("Sales", "sum"),
+    ).sort_values("Procedimientos", ascending=False).head(15)
+    states["Procedimientos"] = states["Procedimientos"].astype(int)
+    fig_geo = px.bar(states, x="Procedimientos", y="State", orientation="h",
+                     labels={"State": "Estado"})
+    fig_geo.update_traces(marker_color="#9966FF")
+    fig_geo.update_layout(height=450, margin=dict(t=20), yaxis=dict(autorange="reversed"))
+    st.plotly_chart(fig_geo, use_container_width=True)
+
+    # ── Quality by Source ──
+    st.subheader("Calidad por Fuente (Tasa de Aprobación)")
+    quality = df.groupby("Source", as_index=False).agg(
+        Total=("Sales", "sum"),
+        Aprobados=("Q Approved", lambda x: (x.str.upper() == "YES").sum()),
+    )
+    quality = quality[quality["Total"] >= 10].copy()
+    quality["% Aprobados"] = (quality["Aprobados"] / quality["Total"] * 100).round(1)
+    quality = quality.sort_values("% Aprobados", ascending=False).head(20)
+    fig_q = px.bar(quality, x="% Aprobados", y="Source", orientation="h",
+                   text="% Aprobados", labels={"Source": "Fuente"})
+    fig_q.update_traces(marker_color="#4caf50", texttemplate="%{text}%", textposition="outside")
+    fig_q.update_layout(height=500, margin=dict(t=20), yaxis=dict(autorange="reversed"))
+    st.plotly_chart(fig_q, use_container_width=True)
+
+
+# ── Main ────────────────────────────────────────────────────────────────────
+
+def main():
+    date_start_str, date_end_str = render_sidebar()
+
+    # Load ads data
+    raw_insights, last_updated = load_cached_data()
+    if not raw_insights:
+        st.warning("No se encontraron datos de ads. Ejecuta update_cache.py localmente.")
+        st.stop()
+
+    st.sidebar.caption(f"Ads actualizados: {last_updated}")
+
+    df_ads = build_ads_dataframe(raw_insights)
+    df_ads = df_ads[df_ads["date_start"].between(pd.Timestamp(date_start_str), pd.Timestamp(date_end_str))]
+
+    # Daily trend from ads data
+    date_90_ago = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+    df_recent = df_ads[df_ads["date_start"] >= pd.Timestamp(date_90_ago)].copy()
+    df_recent["date"] = df_recent["date_start"].dt.strftime("%Y-%m-%d")
+    daily_df = df_recent.groupby("date", as_index=False).agg(
+        spend=("spend", "sum"), clicks=("clicks", "sum"), leads=("leads", "sum")
+    ).sort_values("date")
+
+    # Navigation
+    st.title("📊 Beautyland Plastic Surgery")
+    tab_ads, tab_sales = st.tabs(["🎯 Meta Ads", "💰 Ventas"])
+
+    with tab_ads:
+        render_ads_tab(df_ads, daily_df, date_start_str, date_end_str)
+
+    with tab_sales:
+        render_sales_tab(date_start_str, date_end_str)
+
+    # Footer
+    st.divider()
+    st.caption(f"Dashboard BLPS  |  Última actualización ads: {last_updated}")
 
 
 if __name__ == "__main__":
