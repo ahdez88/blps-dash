@@ -281,10 +281,11 @@ def main():
 
     # Build daily df from the same data (filtered to last 90 days for trend chart)
     date_90_ago = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
-    daily_df = df[df["date_start"] >= pd.Timestamp(date_90_ago)].groupby(
-        df["date_start"].dt.strftime("%Y-%m-%d"), as_index=False
-    ).agg(spend=("spend", "sum"), clicks=("clicks", "sum"), leads=("leads", "sum"))
-    daily_df = daily_df.rename(columns={"date_start": "date"}).sort_values("date")
+    df_recent = df[df["date_start"] >= pd.Timestamp(date_90_ago)].copy()
+    df_recent["date"] = df_recent["date_start"].dt.strftime("%Y-%m-%d")
+    daily_df = df_recent.groupby("date", as_index=False).agg(
+        spend=("spend", "sum"), clicks=("clicks", "sum"), leads=("leads", "sum")
+    ).sort_values("date")
 
     # Sidebar filters
     all_types = sorted(df["tipo"].unique())
