@@ -5,6 +5,7 @@ BLPS Meta Ads Dashboard — Streamlit App
 import streamlit as st
 import requests
 import json
+import time
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -141,23 +142,34 @@ def classify_doctor(name):
 
 # ── API ─────────────────────────────────────────────────────────────────────
 
-def fetch_all_pages(url, params):
+def fetch_all_pages(url, params, max_retries=3):
     all_data = []
     while url:
-        resp = requests.get(url, params=params)
-        if resp.status_code != 200:
-            st.error(f"API Error {resp.status_code}: {resp.text[:200]}")
-            break
+        for attempt in range(max_retries):
+            resp = requests.get(url, params=params)
+            if resp.status_code == 200:
+                break
+            if resp.status_code == 403 and "request limit" in resp.text.lower():
+                wait = 15 * (attempt + 1)
+                time.sleep(wait)
+            else:
+                st.warning(f"API Error {resp.status_code}: {resp.text[:150]}")
+                return all_data
+        else:
+            st.warning(f"Rate limit persistente — se omitió parte de los datos.")
+            return all_data
+
         data = resp.json()
         all_data.extend(data.get("data", []))
         url = data.get("paging", {}).get("next")
         params = {}
+        time.sleep(0.5)
     return all_data
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=7200, show_spinner=False)
 def fetch_all_data(date_start, date_end):
-    """Fetch data from all ad accounts. Cached for 1 hour."""
+    """Fetch data from all ad accounts. Cached for 2 hours."""
     all_insights = []
     all_daily = []
     date_90_ago = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
@@ -182,19 +194,22 @@ def fetch_all_data(date_start, date_end):
             row["_account"] = account_name
         all_insights.extend(insights)
 
-        # Daily insights (last 90 days)
+        time.sleep(2)
+
+        # Daily insights (last 90 days) — account level (no campaign breakdown) to reduce API load
         daily = fetch_all_pages(
             f"{BASE_URL}/{account_id}/insights",
             {
-                "fields": "campaign_id,campaign_name,spend,impressions,clicks,actions",
-                "level": "campaign",
+                "fields": "spend,impressions,clicks,actions",
                 "time_range": json.dumps({"since": date_90_ago, "until": date_end}),
                 "time_increment": 1,
-                "limit": 1000,
+                "limit": 100,
                 "access_token": TOKEN,
             }
         )
         all_daily.extend(daily)
+
+        time.sleep(2)
 
     progress.progress(1.0, text="Datos cargados!")
     return all_insights, all_daily
