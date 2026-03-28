@@ -290,8 +290,38 @@ def main():
     st.sidebar.image("https://beautylandplasticsurgery.com/wp-content/uploads/2024/07/logo-beautyland.webp", width=200)
     st.sidebar.title("Filtros")
 
-    date_start = st.sidebar.date_input("Fecha inicio", value=datetime(2025, 1, 1))
-    date_end = st.sidebar.date_input("Fecha fin", value=datetime.now())
+    today = datetime.now().date()
+    # Monday of current week
+    this_monday = today - timedelta(days=today.weekday())
+    # First day of current month
+    first_of_month = today.replace(day=1)
+    # First day of previous month
+    prev_month = (first_of_month - timedelta(days=1))
+    first_of_prev_month = prev_month.replace(day=1)
+
+    presets = {
+        "Personalizado": None,
+        "Últimos 7 días": (today - timedelta(days=7), today),
+        "Últimos 14 días": (today - timedelta(days=14), today),
+        "Últimos 30 días": (today - timedelta(days=30), today),
+        "Últimos 90 días": (today - timedelta(days=90), today),
+        "Esta semana (Lun-Hoy)": (this_monday, today),
+        "Semana pasada": (this_monday - timedelta(days=7), this_monday - timedelta(days=1)),
+        "Mes hasta la fecha": (first_of_month, today),
+        "Mes pasado": (first_of_prev_month, prev_month),
+        "Este año": (today.replace(month=1, day=1), today),
+        "Todo (desde Ene 2025)": (datetime(2025, 1, 1).date(), today),
+    }
+
+    preset = st.sidebar.selectbox("Período", list(presets.keys()), index=len(presets) - 1)
+
+    if preset == "Personalizado":
+        date_start = st.sidebar.date_input("Fecha inicio", value=datetime(2025, 1, 1))
+        date_end = st.sidebar.date_input("Fecha fin", value=today)
+    else:
+        date_start, date_end = presets[preset]
+        st.sidebar.caption(f"📅 {date_start.strftime('%d/%m/%Y')} → {date_end.strftime('%d/%m/%Y')}")
+
     date_start_str = date_start.strftime("%Y-%m-%d")
     date_end_str = date_end.strftime("%Y-%m-%d")
 
