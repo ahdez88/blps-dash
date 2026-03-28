@@ -5,7 +5,7 @@ BLPS Meta Ads Dashboard — Streamlit App
 import streamlit as st
 import requests
 import json
-import time
+import os
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -140,85 +140,29 @@ def classify_doctor(name):
     return "Sin clasificar"
 
 
-# ── API ─────────────────────────────────────────────────────────────────────
+# ── Data Loading ────────────────────────────────────────────────────────────
 
-def fetch_all_pages(url, params, max_retries=3):
-    all_data = []
-    while url:
-        for attempt in range(max_retries):
-            resp = requests.get(url, params=params)
-            if resp.status_code == 200:
-                break
-            if resp.status_code == 403 and "request limit" in resp.text.lower():
-                wait = 15 * (attempt + 1)
-                time.sleep(wait)
-            else:
-                st.warning(f"API Error {resp.status_code}: {resp.text[:150]}")
-                return all_data
-        else:
-            st.warning(f"Rate limit persistente — se omitió parte de los datos.")
-            return all_data
-
-        data = resp.json()
-        all_data.extend(data.get("data", []))
-        url = data.get("paging", {}).get("next")
-        params = {}
-        time.sleep(0.5)
-    return all_data
+CACHE_URL = "https://raw.githubusercontent.com/ahdez88/blps-dash/master/data_cache.json"
 
 
 @st.cache_data(show_spinner=False)
-def fetch_all_data():
-    """Fetch all data from all ad accounts. Cached until manually cleared."""
-    all_insights = []
-    all_daily = []
-    full_start = "2025-01-01"
-    full_end = datetime.now().strftime("%Y-%m-%d")
-    date_90_ago = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+def load_cached_data():
+    """Load pre-built data cache from the repo. Instant load, no API calls."""
+    # Try loading from local file first (development)
+    local_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data_cache.json")
+    if os.path.exists(local_path):
+        with open(local_path, "r", encoding="utf-8") as f:
+            cache = json.load(f)
+        return cache.get("insights", []), cache.get("last_updated", "unknown")
 
-    progress = st.progress(0, text="Cargando datos de Meta...")
-    total_steps = len(AD_ACCOUNTS) * 2  # campaign insights + daily
+    # Fallback: fetch from GitHub raw URL
+    resp = requests.get(CACHE_URL)
+    if resp.status_code == 200:
+        cache = resp.json()
+        return cache.get("insights", []), cache.get("last_updated", "unknown")
 
-    for i, (account_id, account_name) in enumerate(AD_ACCOUNTS.items()):
-        progress.progress((i * 2) / total_steps, text=f"Cargando campañas — {account_name}...")
-
-        # Campaign insights — DAILY granularity for flexible grouping
-        insights = fetch_all_pages(
-            f"{BASE_URL}/{account_id}/insights",
-            {
-                "fields": "campaign_id,campaign_name,objective,spend,impressions,reach,clicks,actions",
-                "level": "campaign",
-                "time_range": json.dumps({"since": full_start, "until": full_end}),
-                "time_increment": 1,
-                "limit": 500,
-                "access_token": TOKEN,
-            }
-        )
-        for row in insights:
-            row["_account"] = account_name
-        all_insights.extend(insights)
-
-        time.sleep(3)
-
-        progress.progress((i * 2 + 1) / total_steps, text=f"Cargando tendencia diaria — {account_name}...")
-
-        # Daily insights (last 90 days) — account level for trend chart
-        daily = fetch_all_pages(
-            f"{BASE_URL}/{account_id}/insights",
-            {
-                "fields": "spend,impressions,clicks,actions",
-                "time_range": json.dumps({"since": date_90_ago, "until": full_end}),
-                "time_increment": 1,
-                "limit": 100,
-                "access_token": TOKEN,
-            }
-        )
-        all_daily.extend(daily)
-
-        time.sleep(3)
-
-    progress.progress(1.0, text="Datos cargados!")
-    return all_insights, all_daily
+    st.error("No se pudo cargar el caché de datos.")
+    return [], "error"
 
 
 # ── Processing ──────────────────────────────────────────────────────────────
@@ -269,20 +213,6 @@ def build_dataframe(insights):
     return df
 
 
-def build_daily_df(daily_insights):
-    rows = []
-    for row in daily_insights:
-        rows.append({
-            "date": row.get("date_start", ""),
-            "spend": float(row.get("spend", 0)),
-            "clicks": int(row.get("clicks", 0)),
-            "leads": extract_leads(row.get("actions")),
-        })
-    df = pd.DataFrame(rows)
-    if not df.empty:
-        df = df.groupby("date", as_index=False).sum()
-        df = df.sort_values("date")
-    return df
 
 
 # ── Dashboard UI ────────────────────────────────────────────────────────────
@@ -331,24 +261,30 @@ def main():
     date_start_str = date_start.strftime("%Y-%m-%d")
     date_end_str = date_end.strftime("%Y-%m-%d")
 
-    if st.sidebar.button("🔄 Actualizar datos", type="primary", use_container_width=True):
+    if st.sidebar.button("🔄 Recargar caché", type="primary", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
 
-    # ── Fetch & Process (always full range, filter locally) ──
-    raw_insights, raw_daily = fetch_all_data()
+    # ── Load from pre-built cache (instant, no API calls) ──
+    raw_insights, last_updated = load_cached_data()
 
     if not raw_insights:
-        st.warning("No se encontraron datos. Pulsa 'Actualizar datos'.")
+        st.warning("No se encontraron datos. Ejecuta update_cache.py localmente.")
         st.stop()
 
+    st.sidebar.caption(f"Datos actualizados: {last_updated}")
+
     df = build_dataframe(raw_insights)
-    daily_df = build_daily_df(raw_daily)
 
     # Filter by selected date range
     df = df[df["date_start"].between(pd.Timestamp(date_start_str), pd.Timestamp(date_end_str))]
-    if not daily_df.empty:
-        daily_df = daily_df[daily_df["date"].between(date_start_str, date_end_str)]
+
+    # Build daily df from the same data (filtered to last 90 days for trend chart)
+    date_90_ago = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+    daily_df = df[df["date_start"] >= pd.Timestamp(date_90_ago)].groupby(
+        df["date_start"].dt.strftime("%Y-%m-%d"), as_index=False
+    ).agg(spend=("spend", "sum"), clicks=("clicks", "sum"), leads=("leads", "sum"))
+    daily_df = daily_df.rename(columns={"date_start": "date"}).sort_values("date")
 
     # Sidebar filters
     all_types = sorted(df["tipo"].unique())
