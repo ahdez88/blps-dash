@@ -11,6 +11,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 from io import StringIO
+import re
 
 # ── Page Config ─────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -126,6 +127,144 @@ def classify_doctor(name):
     if any(kw in name_upper for kw in ["BLPS", "BEAUTYLAND", "BEAUTY LAND", "CLINICA", "CLINIC", "BEAUTY |", "[BEAUTY]"]):
         return "Clínica (BLPS)"
     return "Sin clasificar"
+
+
+# ── Cross-Analysis Source Key Mapping ──────────────────────────────────────
+
+def meta_campaign_to_source_key(name):
+    """Map Meta campaign name to normalized source key for cross-analysis.
+    Returns key like 'DRSIMMONS-LP-EN', 'WHA', 'BRAND', or None.
+    """
+    n = name.strip().upper()
+
+    # Brand / Awareness → no direct lead attribution
+    if any(kw in n for kw in [
+        "REACH", "REPRODUCCIONVIDEO", "BA | BE", "ENGAGEMENT |",
+        "EVP |", "BODYSCULPT", "-BRAND"
+    ]):
+        return "BRAND"
+
+    # WhatsApp campaigns
+    if "WHA" in n:
+        return "WHA"
+
+    # Messages (IG DM campaigns)
+    if any(kw in n for kw in ["-MES-", "MESSAGE |", "MESSAGES |"]):
+        if "SIMMONS" in n:
+            return "DRSIMMONS-MES-EN"
+        if "FLORES" in n:
+            return "DRFLORES-MES-EN"
+        return "BLPS-MES"
+
+    # Extract page with number (DRSIMMONS1 → DRSIMMONS, DRSIMMONS2 stays)
+    page = None
+    m = re.search(r'(DRSIMMONS|DRSOPHIE|DRSALGADO|DRFLORES|BLPS)(\d*)', n)
+    if m:
+        base, num = m.group(1), m.group(2)
+        page = base if num in ("", "1") else f"{base}{num}"
+    else:
+        # Pipe-format fallback (IF | SIMMONS | ENG ...)
+        for kw, pg in [("SIMMONS", "DRSIMMONS"), ("FLORES", "DRFLORES"),
+                        ("SOPHIE", "DRSOPHIE"), ("SALGADO", "DRSALGADO"),
+                        ("BLPS", "BLPS"), ("BEAUTYLAND", "BLPS")]:
+            if kw in n:
+                page = pg
+                break
+
+    if page is None:
+        return None
+
+    # Extract campaign type
+    ctype = None
+    if any(kw in n for kw in ["IF ", "IF|", "-IF-", "IF_", "INSTANTFORM", "| IF"]):
+        ctype = "IF"
+    elif any(kw in n for kw in ["-LP-", "WEBSITE", "WEB ", "WEB|"]):
+        ctype = "LP"
+
+    if ctype is None:
+        return None
+
+    # Special: Florida geo-targeted → LP-FL
+    if "FLORIDA" in n:
+        return f"{page}-LP-FL"
+
+    # Special: DRSIMMONS4 = Lookalike test
+    if page == "DRSIMMONS4":
+        return "DRSIMMONS4-LKL"
+
+    # Extract language
+    lang = "EN"
+    if "ESP" in n:
+        lang = "ES"
+    elif re.search(r'[\-| ]ES[\-| _]', n) or n.endswith("-ES"):
+        lang = "ES"
+
+    return f"{page}-{ctype}-{lang}"
+
+
+def crm_source_to_meta_key(source):
+    """Map CRM source to Meta source key. Returns None for non-Meta sources."""
+    if not isinstance(source, str):
+        return None
+    su = source.strip().upper()
+
+    # WhatsApp sources → all from Meta WHA campaigns
+    if su.startswith("WA-") or su == "WHATSAPP LEAD":
+        return "WHA"
+
+    # Instagram Messages from MES campaigns (confirmed by user)
+    if su.startswith("SIMMON") and "INSTAGRAM" in su and "MESSAGE" in su:
+        return "DRSIMMONS-MES-EN"
+
+    # Special: Lookalike
+    if su == "DRSIMMONS4-LKL":
+        return "DRSIMMONS4-LKL"
+
+    # Standard format: PAGE(N)-TYPE-LANG(-SUFFIX)
+    m = re.match(
+        r'^((?:DR)?[A-Z]+)(\d*)-(IF|LP)-(EN|ENG|ES|ESP|FL)(?:[_-].+)?$', su
+    )
+    if m:
+        base, num, ctype, lang_raw = m.group(1), m.group(2), m.group(3), m.group(4)
+        page = base if num in ("", "1") else f"{base}{num}"
+        lang = "EN" if lang_raw.startswith("EN") else ("FL" if lang_raw == "FL" else "ES")
+        return f"{page}-{ctype}-{lang}"
+
+    # Non-Meta sources (organic, referral, call center, etc.)
+    return None
+
+
+def source_key_label(key):
+    """Convert source key to human-readable label."""
+    if key == "BRAND":
+        return "Brand / Awareness"
+    if key == "WHA":
+        return "WhatsApp"
+    if key == "BLPS-MES":
+        return "BLPS · Mensajes"
+    page_map = {
+        "DRSIMMONS": "Simmons", "DRFLORES": "Flores",
+        "DRSOPHIE": "Sophie", "DRSALGADO": "Salgado", "BLPS": "BLPS",
+    }
+    type_map = {
+        "IF": "Inst. Form", "LP": "Landing Page", "MES": "Mensajes", "LKL": "Lookalike",
+    }
+    parts = key.split("-")
+    page_raw = parts[0]
+    page_label = page_raw
+    for base, name in page_map.items():
+        if page_raw.startswith(base):
+            num = page_raw[len(base):]
+            page_label = f"{name}({num})" if num else name
+            break
+    ctype_label = type_map.get(parts[1], parts[1]) if len(parts) > 1 else ""
+    lang_label = parts[2] if len(parts) > 2 else ""
+    result = page_label
+    if ctype_label:
+        result += f" · {ctype_label}"
+    if lang_label:
+        result += f" · {lang_label}"
+    return result
 
 
 # ── Data Loading ────────────────────────────────────────────────────────────
@@ -614,6 +753,216 @@ def render_sales_tab(date_start_str, date_end_str):
     st.plotly_chart(fig_q, use_container_width=True)
 
 
+# ── Tab: Cross-Analysis ───────────────────────────────────────────────────
+
+def render_cross_tab(df_ads, date_start_str, date_end_str):
+    """Cross-analysis: Meta spend vs CRM sales by source."""
+
+    df_sales = st.session_state.get("sales_df")
+    if df_sales is None:
+        st.info("Carga un CSV de ventas en la pestaña **Ventas** para ver el cruce Meta vs Ventas.")
+        return
+
+    # Optional: leads distribution CSV
+    st.sidebar.divider()
+    st.sidebar.subheader("Leads por Fuente (opcional)")
+    leads_file = st.sidebar.file_uploader("CSV distribución de leads", type="csv", key="leads_csv")
+    leads_map = {}
+    if leads_file is not None:
+        ldf = pd.read_csv(leads_file, encoding="utf-8-sig")
+        if "Source" in ldf.columns and "Accepted" in ldf.columns:
+            for _, r in ldf.iterrows():
+                k = crm_source_to_meta_key(str(r.get("Source", "")))
+                if k:
+                    leads_map[k] = leads_map.get(k, 0) + int(r.get("Accepted", 0))
+            st.sidebar.success(f"{len(ldf)} fuentes cargadas")
+
+    # Filter by dates
+    df_s = df_sales[df_sales["Sales Dates"].between(
+        pd.Timestamp(date_start_str), pd.Timestamp(date_end_str)
+    )].copy()
+    df_a = df_ads.copy()
+
+    if df_s.empty:
+        st.warning("No hay ventas en el periodo seleccionado.")
+        return
+
+    # Map source keys
+    df_a["source_key"] = df_a["campaign"].apply(meta_campaign_to_source_key)
+    df_s["source_key"] = df_s["Source"].apply(crm_source_to_meta_key)
+
+    # Aggregate ads by source key
+    ads_g = df_a[df_a["source_key"].notna()].groupby("source_key", as_index=False).agg(
+        spend=("spend", "sum"), leads_meta=("leads", "sum"))
+
+    # Aggregate sales by source key
+    sales_g = df_s[df_s["source_key"].notna()].groupby("source_key", as_index=False).agg(
+        facturas=("Invoice", "nunique"), procs=("Sales", "sum"))
+
+    # Merge
+    cross = pd.merge(ads_g, sales_g, on="source_key", how="outer").fillna(0)
+    for c in ["procs", "facturas", "leads_meta"]:
+        cross[c] = cross[c].astype(int)
+
+    # Add CRM leads if available
+    if leads_map:
+        cross["leads_crm"] = cross["source_key"].map(leads_map).fillna(0).astype(int)
+
+    # Metrics
+    cross["cpp"] = cross.apply(lambda r: r["spend"] / r["procs"] if r["procs"] > 0 else 0, axis=1)
+    cross["cps"] = cross.apply(lambda r: r["spend"] / r["facturas"] if r["facturas"] > 0 else 0, axis=1)
+    if leads_map:
+        cross["cpl"] = cross.apply(
+            lambda r: r["spend"] / r["leads_crm"] if r.get("leads_crm", 0) > 0 else 0, axis=1)
+        cross["conv"] = cross.apply(
+            lambda r: r["facturas"] / r["leads_crm"] * 100 if r.get("leads_crm", 0) > 0 else 0, axis=1)
+
+    cross["label"] = cross["source_key"].apply(source_key_label)
+
+    # Separate brand and active rows
+    brand_spend = cross.loc[cross["source_key"] == "BRAND", "spend"].sum()
+    cx = cross[
+        (cross["source_key"] != "BRAND") & ((cross["spend"] > 0) | (cross["procs"] > 0))
+    ].sort_values("spend", ascending=False).copy()
+
+    # Non-Meta sales
+    non_meta = df_s[df_s["source_key"].isna()]
+    non_meta_procs = int(non_meta["Sales"].sum())
+
+    total_spend = cx["spend"].sum()
+    meta_procs = int(cx["procs"].sum())
+    meta_fact = int(cx["facturas"].sum())
+    total_procs = int(df_s["Sales"].sum())
+    pct = meta_procs / total_procs * 100 if total_procs else 0
+
+    # ── KPIs ──
+    k1, k2, k3, k4, k5, k6 = st.columns(6)
+    k1.metric("Inversión Meta", f"${total_spend:,.0f}")
+    k2.metric("Ventas Meta", f"{meta_fact:,} facturas")
+    k3.metric("Procs Meta", f"{meta_procs:,}")
+    k4.metric("% Procs de Meta", f"{pct:.1f}%")
+    k5.metric("Costo / Factura", f"${total_spend / meta_fact:,.0f}" if meta_fact else "-")
+    k6.metric("Costo / Proc", f"${total_spend / meta_procs:,.0f}" if meta_procs else "-")
+
+    st.divider()
+
+    # ── Main Table ──
+    st.subheader("Desglose por Fuente")
+    cols = ["label", "spend", "leads_meta"]
+    names = {"label": "Fuente", "spend": "Inversión", "leads_meta": "Leads (Meta)"}
+    if leads_map:
+        cols.append("leads_crm")
+        names["leads_crm"] = "Leads (CRM)"
+    cols += ["facturas", "procs", "cpp", "cps"]
+    names.update({"facturas": "Facturas", "procs": "Procs", "cpp": "$/Proc", "cps": "$/Factura"})
+    if leads_map:
+        cols += ["cpl", "conv"]
+        names.update({"cpl": "CPL", "conv": "Lead→Venta %"})
+
+    fmt = cx[cols].copy()
+    fmt["spend"] = cx["spend"].apply(lambda x: f"${x:,.0f}")
+    fmt["leads_meta"] = cx["leads_meta"].apply(lambda x: f"{x:,}")
+    fmt["cpp"] = cx["cpp"].apply(lambda x: f"${x:,.0f}" if x > 0 else "-")
+    fmt["cps"] = cx["cps"].apply(lambda x: f"${x:,.0f}" if x > 0 else "-")
+    if leads_map:
+        fmt["leads_crm"] = cx["leads_crm"].apply(lambda x: f"{x:,}")
+        fmt["cpl"] = cx["cpl"].apply(lambda x: f"${x:.2f}" if x > 0 else "-")
+        fmt["conv"] = cx["conv"].apply(lambda x: f"{x:.1f}%" if x > 0 else "-")
+
+    st.dataframe(fmt.rename(columns=names), use_container_width=True, hide_index=True, height=500)
+
+    st.divider()
+
+    # ── Donut: spend distribution vs sales origin ──
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("Distribución de Inversión")
+        inv_data = cx[cx["spend"] > 0].copy()
+        inv_data["pct"] = (inv_data["spend"] / inv_data["spend"].sum() * 100).round(1)
+        inv_data["text"] = inv_data.apply(
+            lambda r: f"{r['label']}<br>{r['pct']}% — ${r['spend']:,.0f}", axis=1)
+        fig1 = px.pie(inv_data, values="spend", names="label", hole=0.4)
+        fig1.update_traces(text=inv_data["text"], textinfo="text", textposition="outside",
+                           textfont_size=11, outsidetextfont_size=11)
+        fig1.update_layout(showlegend=False, height=500, margin=dict(t=40, b=80, l=60, r=60))
+        st.plotly_chart(fig1, use_container_width=True)
+
+    with col2:
+        st.subheader("Origen de Ventas (Procs)")
+        meta_row = pd.DataFrame(cx.groupby(cx["source_key"].apply(
+            lambda k: "Meta (por fuente)" if k else "")).agg({"procs": "sum"}).reset_index())
+        all_origin = pd.DataFrame([
+            {"origen": "Meta Ads", "procs": meta_procs},
+            {"origen": "No Meta", "procs": non_meta_procs},
+        ])
+        fig2 = px.pie(all_origin, values="procs", names="origen", hole=0.4,
+                       color_discrete_sequence=["#4fc3f7", "#ff9800"])
+        fig2.update_traces(
+            text=all_origin.apply(
+                lambda r: f"{r['origen']}<br>{r['procs']:,} ({r['procs']/total_procs*100:.1f}%)", axis=1),
+            textinfo="text", textposition="outside", textfont_size=13)
+        fig2.update_layout(showlegend=False, height=500, margin=dict(t=40, b=80, l=60, r=60))
+        st.plotly_chart(fig2, use_container_width=True)
+
+    st.divider()
+
+    # ── Cost per Procedure bar ──
+    st.subheader("Costo por Procedimiento por Fuente")
+    cpp_d = cx[cx["cpp"] > 0].sort_values("cpp")
+    fig3 = px.bar(cpp_d, y="label", x="cpp", orientation="h",
+                  text=cpp_d["cpp"].apply(lambda x: f"${x:,.0f}"),
+                  labels={"label": "", "cpp": "$/Procedimiento"})
+    fig3.update_traces(marker_color="#FF6384", textposition="outside")
+    fig3.update_layout(height=max(350, len(cpp_d) * 28 + 100), margin=dict(t=20, l=200))
+    st.plotly_chart(fig3, use_container_width=True)
+
+    st.divider()
+
+    # ── Spend vs Procs comparison ──
+    st.subheader("Inversión vs Procedimientos")
+    comp = cx[(cx["spend"] > 0) & (cx["procs"] > 0)].sort_values("procs", ascending=True).copy()
+    if not comp.empty:
+        comp["spend_pct"] = (comp["spend"] / comp["spend"].sum() * 100).round(1)
+        comp["procs_pct"] = (comp["procs"] / comp["procs"].sum() * 100).round(1)
+        fig4 = go.Figure()
+        fig4.add_trace(go.Bar(y=comp["label"], x=comp["spend_pct"], name="% Inversión",
+                              orientation="h", marker_color="#4fc3f7",
+                              text=comp["spend_pct"].apply(lambda x: f"{x:.1f}%"),
+                              textposition="outside"))
+        fig4.add_trace(go.Bar(y=comp["label"], x=comp["procs_pct"], name="% Procedimientos",
+                              orientation="h", marker_color="#4caf50",
+                              text=comp["procs_pct"].apply(lambda x: f"{x:.1f}%"),
+                              textposition="outside"))
+        fig4.update_layout(barmode="group", height=max(350, len(comp) * 35 + 100),
+                           margin=dict(t=20, l=200),
+                           legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                           xaxis_title="% del total")
+        st.plotly_chart(fig4, use_container_width=True)
+
+    st.divider()
+
+    # ── Non-Meta sources ──
+    col_n, col_s = st.columns([2, 1])
+    with col_n:
+        st.subheader(f"Ventas No-Meta ({non_meta_procs:,} procs)")
+        if not non_meta.empty:
+            nm = non_meta.groupby("Source", as_index=False).agg(
+                facturas=("Invoice", "nunique"), procs=("Sales", "sum")
+            ).sort_values("procs", ascending=False)
+            nm["procs"] = nm["procs"].astype(int)
+            st.dataframe(
+                nm.head(20).rename(columns={"Source": "Fuente", "facturas": "Facturas", "procs": "Procs"}),
+                use_container_width=True, hide_index=True)
+
+    with col_s:
+        st.subheader("Resumen General")
+        st.metric("Total Procs (todas fuentes)", f"{total_procs:,}")
+        st.metric("Procs de Meta", f"{meta_procs:,} ({pct:.1f}%)")
+        st.metric("Procs No-Meta", f"{total_procs - meta_procs:,} ({100-pct:.1f}%)")
+        if brand_spend > 0:
+            st.metric("Brand/Awareness (sin atrib.)", f"${brand_spend:,.0f}")
+
+
 # ── Main ────────────────────────────────────────────────────────────────────
 
 def main():
@@ -640,13 +989,16 @@ def main():
 
     # Navigation
     st.title("📊 Beautyland Plastic Surgery")
-    tab_ads, tab_sales = st.tabs(["🎯 Meta Ads", "💰 Ventas"])
+    tab_ads, tab_sales, tab_cross = st.tabs(["🎯 Meta Ads", "💰 Ventas", "🔄 Meta vs Ventas"])
 
     with tab_ads:
         render_ads_tab(df_ads, daily_df, date_start_str, date_end_str)
 
     with tab_sales:
         render_sales_tab(date_start_str, date_end_str)
+
+    with tab_cross:
+        render_cross_tab(df_ads, date_start_str, date_end_str)
 
     # Footer
     st.divider()
