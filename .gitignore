@@ -1,0 +1,24 @@
+# Secrets
+.env
+
+# Generated
+dashboard.html
+
+# Data files (sensitive client data)
+*.xlsx
+*.csv
+
+# Standalone policy files (duplicates of meta-app-policies/)
+privacy-policy.html
+data-deletion.html
+
+# Claude internal
+.claude/
+
+# Python
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store
+Thumbs.db
