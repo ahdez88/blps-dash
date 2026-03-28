@@ -283,8 +283,54 @@ def load_cached_data():
     if resp.status_code == 200:
         cache = resp.json()
         return cache.get("insights", []), cache.get("last_updated", "unknown")
-    st.error("No se pudo cargar el caché de datos.")
+    st.error("No se pudo cargar el cache de datos.")
     return [], "error"
+
+
+@st.cache_data(show_spinner=False)
+def load_sales_cache():
+    """Load sales data from committed JSON cache."""
+    local_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sales_cache.json")
+    if os.path.exists(local_path):
+        with open(local_path, "r", encoding="utf-8") as f:
+            cache = json.load(f)
+        records = cache.get("records", [])
+        if records:
+            return pd.DataFrame(records), cache.get("last_updated", "")
+    return None, ""
+
+
+@st.cache_data(show_spinner=False)
+def load_leads_cache():
+    """Load leads distribution from committed JSON cache."""
+    local_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "leads_cache.json")
+    if os.path.exists(local_path):
+        with open(local_path, "r", encoding="utf-8") as f:
+            cache = json.load(f)
+        records = cache.get("records", [])
+        if records:
+            return pd.DataFrame(records), cache.get("last_updated", "")
+    return None, ""
+
+
+def merge_sales(existing_df, new_raw_df):
+    """Merge new sales CSV into existing DataFrame. Dedup by Invoice+Procedure+Date."""
+    new_df = build_sales_dataframe(new_raw_df)
+    existing_df["_key"] = (
+        existing_df["Invoice"].astype(str) + "|" +
+        existing_df["Sales W Payments"].astype(str) + "|" +
+        existing_df["Sales Dates"].astype(str)
+    )
+    new_df["_key"] = (
+        new_df["Invoice"].astype(str) + "|" +
+        new_df["Sales W Payments"].astype(str) + "|" +
+        new_df["Sales Dates"].astype(str)
+    )
+    before = len(existing_df)
+    combined = pd.concat([existing_df, new_df]).drop_duplicates(subset="_key", keep="last")
+    combined = combined.drop(columns="_key")
+    added = len(combined) - before
+    return combined, added
 
 
 # ── Processing ──────────────────────────────────────────────────────────────
@@ -599,25 +645,62 @@ def render_ads_tab(df, daily_df, date_start_str, date_end_str):
 def render_sales_tab(date_start_str, date_end_str):
     """Render the Sales analysis tab."""
 
-    # Sales data management
+    # Sales data: load from cache on first run
     if "sales_df" not in st.session_state:
-        st.session_state.sales_df = None
+        cached_df, cached_updated = load_sales_cache()
+        if cached_df is not None:
+            st.session_state.sales_df = build_sales_dataframe(cached_df)
+            st.session_state.sales_updated = cached_updated
+        else:
+            st.session_state.sales_df = None
+            st.session_state.sales_updated = ""
 
+    # Sidebar: status + upload + download
     st.sidebar.divider()
     st.sidebar.subheader("Datos de Ventas")
-    uploaded = st.sidebar.file_uploader("Cargar CSV de ventas", type="csv", key="sales_upload")
+
+    if st.session_state.sales_df is not None:
+        n = len(st.session_state.sales_df)
+        upd = st.session_state.get("sales_updated", "")
+        st.sidebar.caption(f"Base: {n:,} registros | Act: {upd}")
+
+    uploaded = st.sidebar.file_uploader("Actualizar datos (CSV)", type="csv", key="sales_upload")
 
     if uploaded is not None:
-        raw = pd.read_csv(uploaded, encoding="utf-8-sig")
-        st.session_state.sales_df = build_sales_dataframe(raw)
-        st.sidebar.success(f"Cargadas {len(raw):,} facturas")
+        new_raw = pd.read_csv(uploaded, encoding="utf-8-sig")
+        if st.session_state.sales_df is not None:
+            combined, added = merge_sales(st.session_state.sales_df, new_raw)
+            st.session_state.sales_df = combined
+            st.session_state.sales_updated = datetime.now().strftime("%Y-%m-%d %H:%M")
+            st.sidebar.success(f"Sincronizado: +{added:,} registros nuevos")
+        else:
+            st.session_state.sales_df = build_sales_dataframe(new_raw)
+            st.session_state.sales_updated = datetime.now().strftime("%Y-%m-%d %H:%M")
+            st.sidebar.success(f"Cargados {len(new_raw):,} registros")
+
+    # Download merged data for committing to repo
+    if st.session_state.sales_df is not None:
+        dl_df = st.session_state.sales_df.drop(
+            columns=["month", "week", "days_to_close", "proc_group"], errors="ignore"
+        )
+        dl_records = dl_df.to_dict(orient="records")
+        dl_json = json.dumps({
+            "records": dl_records,
+            "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "total_records": len(dl_records),
+        }, ensure_ascii=False, default=str)
+        st.sidebar.download_button(
+            "Descargar cache actualizado",
+            data=dl_json,
+            file_name="sales_cache.json",
+            mime="application/json",
+            use_container_width=True,
+        )
 
     df = st.session_state.sales_df
 
     if df is None:
-        st.info("📂 Carga un archivo CSV de ventas desde la barra lateral para ver el análisis.\n\n"
-                "El archivo debe tener las columnas: Consultant, Invoice, Sales Dates, Contact, "
-                "Sales W Payments, Source, State, Q Signed, Q Approved, Contact Date, Sales")
+        st.info("No hay datos de ventas. Ejecuta `update_sales.py` localmente o carga un CSV.")
         return
 
     # Filter by date range
@@ -763,19 +846,58 @@ def render_cross_tab(df_ads, date_start_str, date_end_str):
         st.info("Carga un CSV de ventas en la pestaña **Ventas** para ver el cruce Meta vs Ventas.")
         return
 
-    # Optional: leads distribution CSV
-    st.sidebar.divider()
-    st.sidebar.subheader("Leads por Fuente (opcional)")
-    leads_file = st.sidebar.file_uploader("CSV distribución de leads", type="csv", key="leads_csv")
+    # Leads data: load from cache + optional upload to update
     leads_map = {}
+
+    # Load cached leads
+    if "leads_df" not in st.session_state:
+        cached_leads, leads_updated = load_leads_cache()
+        if cached_leads is not None:
+            st.session_state.leads_df = cached_leads
+            st.session_state.leads_updated = leads_updated
+        else:
+            st.session_state.leads_df = None
+            st.session_state.leads_updated = ""
+
+    st.sidebar.divider()
+    st.sidebar.subheader("Datos de Leads")
+
+    if st.session_state.get("leads_df") is not None:
+        n_leads = len(st.session_state.leads_df)
+        leads_upd = st.session_state.get("leads_updated", "")
+        st.sidebar.caption(f"Base: {n_leads} fuentes | Act: {leads_upd}")
+
+    leads_file = st.sidebar.file_uploader("Actualizar leads (CSV)", type="csv", key="leads_csv")
     if leads_file is not None:
         ldf = pd.read_csv(leads_file, encoding="utf-8-sig")
-        if "Source" in ldf.columns and "Accepted" in ldf.columns:
-            for _, r in ldf.iterrows():
-                k = crm_source_to_meta_key(str(r.get("Source", "")))
-                if k:
-                    leads_map[k] = leads_map.get(k, 0) + int(r.get("Accepted", 0))
-            st.sidebar.success(f"{len(ldf)} fuentes cargadas")
+        st.session_state.leads_df = ldf
+        st.session_state.leads_updated = datetime.now().strftime("%Y-%m-%d %H:%M")
+        st.sidebar.success(f"{len(ldf)} fuentes actualizadas")
+
+        # Download for committing
+        dl_records = ldf.to_dict(orient="records")
+        for r in dl_records:
+            for k, v in r.items():
+                if pd.isna(v):
+                    r[k] = None
+        dl_json = json.dumps({
+            "records": dl_records,
+            "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "total_sources": len(dl_records),
+        }, ensure_ascii=False, default=str)
+        st.sidebar.download_button(
+            "Descargar leads cache",
+            data=dl_json, file_name="leads_cache.json",
+            mime="application/json", use_container_width=True,
+        )
+
+    # Build leads_map from whatever source we have
+    ldf = st.session_state.get("leads_df")
+    if ldf is not None and "Source" in ldf.columns and "Accepted" in ldf.columns:
+        for _, r in ldf.iterrows():
+            k = crm_source_to_meta_key(str(r.get("Source", "")))
+            if k:
+                leads_map[k] = leads_map.get(k, 0) + int(r.get("Accepted", 0))
 
     # Filter by dates
     df_s = df_sales[df_sales["Sales Dates"].between(
