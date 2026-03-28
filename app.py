@@ -346,22 +346,30 @@ def main():
         st.subheader("Inversión por Tipo de Campaña")
         type_df = df_filtered.groupby("tipo", as_index=False)["spend"].sum().sort_values("spend", ascending=False)
         type_df["pct"] = (type_df["spend"] / type_df["spend"].sum() * 100).round(1)
+        type_df["label"] = type_df.apply(lambda r: f"{r['tipo']}<br>{r['pct']}% — ${r['spend']:,.0f}", axis=1)
         color_map = {t: TYPE_COLORS.get(t, "#888") for t in type_df["tipo"]}
         fig_type = px.pie(type_df, values="spend", names="tipo", hole=0.45,
                           color="tipo", color_discrete_map=color_map)
-        fig_type.update_traces(textinfo="percent+label", textposition="outside")
-        fig_type.update_layout(showlegend=False, margin=dict(t=20, b=20, l=20, r=20), height=400)
+        fig_type.update_traces(
+            text=type_df["label"], textinfo="text", textposition="outside",
+            textfont_size=13, outsidetextfont_size=13,
+        )
+        fig_type.update_layout(showlegend=False, margin=dict(t=40, b=80, l=60, r=60), height=500)
         st.plotly_chart(fig_type, use_container_width=True)
 
     with col2:
         st.subheader("Inversión por Página / Doctor")
         doc_df = df_filtered.groupby("pagina", as_index=False)["spend"].sum().sort_values("spend", ascending=False)
         doc_df["pct"] = (doc_df["spend"] / doc_df["spend"].sum() * 100).round(1)
+        doc_df["label"] = doc_df.apply(lambda r: f"{r['pagina']}<br>{r['pct']}% — ${r['spend']:,.0f}", axis=1)
         color_map_doc = {d: DOCTOR_COLORS.get(d, "#888") for d in doc_df["pagina"]}
         fig_doc = px.pie(doc_df, values="spend", names="pagina", hole=0.45,
                          color="pagina", color_discrete_map=color_map_doc)
-        fig_doc.update_traces(textinfo="percent+label", textposition="outside")
-        fig_doc.update_layout(showlegend=False, margin=dict(t=20, b=20, l=20, r=20), height=400)
+        fig_doc.update_traces(
+            text=doc_df["label"], textinfo="text", textposition="outside",
+            textfont_size=13, outsidetextfont_size=13,
+        )
+        fig_doc.update_layout(showlegend=False, margin=dict(t=40, b=80, l=60, r=60), height=500)
         st.plotly_chart(fig_doc, use_container_width=True)
 
     st.divider()
