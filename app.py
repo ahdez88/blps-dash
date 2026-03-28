@@ -247,6 +247,7 @@ def build_dataframe(insights):
             "tipo": classify_campaign_type(name, objective),
             "pagina": classify_doctor(name),
             "account": row.get("_account", ""),
+            "date_start": date_start,
             "month": month,
             "spend": spend,
             "impressions": impressions,
@@ -254,7 +255,12 @@ def build_dataframe(insights):
             "reach": reach,
             "leads": leads,
         })
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df["date_start"] = pd.to_datetime(df["date_start"], errors="coerce")
+        # Week: Monday to Sunday (ISO)
+        df["week"] = df["date_start"].dt.to_period("W-SUN").astype(str)
+    return df
 
 
 def build_daily_df(daily_insights):
@@ -419,40 +425,45 @@ def main():
 
     st.divider()
 
-    # ── Monthly Stacked Bar: by Type ──
-    st.subheader("Inversión Mensual por Tipo de Campaña")
-    monthly_type = df_filtered.groupby(["month", "tipo"], as_index=False)["spend"].sum()
-    fig_mt = px.bar(monthly_type, x="month", y="spend", color="tipo",
+    # ── Time Period Toggle ──
+    time_mode = st.radio("Agrupar por:", ["Mensual", "Semanal"], horizontal=True, key="time_mode")
+    time_col = "month" if time_mode == "Mensual" else "week"
+    time_label = "Mes" if time_mode == "Mensual" else "Semana"
+
+    # ── Stacked Bar: by Type ──
+    st.subheader(f"Inversión {time_mode} por Tipo de Campaña")
+    time_type = df_filtered.groupby([time_col, "tipo"], as_index=False)["spend"].sum().sort_values(time_col)
+    fig_mt = px.bar(time_type, x=time_col, y="spend", color="tipo",
                     color_discrete_map=TYPE_COLORS,
-                    labels={"month": "Mes", "spend": "Inversión ($)", "tipo": "Tipo"})
+                    labels={time_col: time_label, "spend": "Inversión ($)", "tipo": "Tipo"})
     fig_mt.update_layout(barmode="stack", height=450, margin=dict(t=20))
     st.plotly_chart(fig_mt, use_container_width=True)
 
-    # ── Monthly Stacked Bar: by Doctor ──
-    st.subheader("Inversión Mensual por Página / Doctor")
-    monthly_doc = df_filtered.groupby(["month", "pagina"], as_index=False)["spend"].sum()
-    fig_md = px.bar(monthly_doc, x="month", y="spend", color="pagina",
+    # ── Stacked Bar: by Doctor ──
+    st.subheader(f"Inversión {time_mode} por Página / Doctor")
+    time_doc = df_filtered.groupby([time_col, "pagina"], as_index=False)["spend"].sum().sort_values(time_col)
+    fig_md = px.bar(time_doc, x=time_col, y="spend", color="pagina",
                     color_discrete_map=DOCTOR_COLORS,
-                    labels={"month": "Mes", "spend": "Inversión ($)", "pagina": "Página"})
+                    labels={time_col: time_label, "spend": "Inversión ($)", "pagina": "Página"})
     fig_md.update_layout(barmode="stack", height=450, margin=dict(t=20))
     st.plotly_chart(fig_md, use_container_width=True)
 
-    # ── Monthly Totals ──
+    # ── Totals ──
     col_s, col_l = st.columns(2)
-    monthly_agg = df_filtered.groupby("month", as_index=False).agg(spend=("spend", "sum"), leads=("leads", "sum"))
+    time_agg = df_filtered.groupby(time_col, as_index=False).agg(spend=("spend", "sum"), leads=("leads", "sum")).sort_values(time_col)
 
     with col_s:
-        st.subheader("Inversión Mensual Total")
-        fig_s = px.bar(monthly_agg, x="month", y="spend",
-                       labels={"month": "Mes", "spend": "Inversión ($)"})
+        st.subheader(f"Inversión {time_mode} Total")
+        fig_s = px.bar(time_agg, x=time_col, y="spend",
+                       labels={time_col: time_label, "spend": "Inversión ($)"})
         fig_s.update_traces(marker_color="#4fc3f7")
         fig_s.update_layout(height=350, margin=dict(t=20))
         st.plotly_chart(fig_s, use_container_width=True)
 
     with col_l:
-        st.subheader("Leads Mensuales")
-        fig_l = px.bar(monthly_agg, x="month", y="leads",
-                       labels={"month": "Mes", "leads": "Leads"})
+        st.subheader(f"Leads {time_mode}es" if time_mode == "Mensual" else "Leads Semanales")
+        fig_l = px.bar(time_agg, x=time_col, y="leads",
+                       labels={time_col: time_label, "leads": "Leads"})
         fig_l.update_traces(marker_color="#4caf50")
         fig_l.update_layout(height=350, margin=dict(t=20))
         st.plotly_chart(fig_l, use_container_width=True)
