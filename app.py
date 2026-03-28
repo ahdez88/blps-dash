@@ -19,6 +19,28 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# ── Auth ────────────────────────────────────────────────────────────────────
+def check_password():
+    """Simple password gate."""
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+
+    if st.session_state.authenticated:
+        return True
+
+    st.title("🔒 BLPS Dashboard")
+    password = st.text_input("Contraseña", type="password")
+    if st.button("Entrar", type="primary"):
+        if password == st.secrets.get("APP_PASSWORD", ""):
+            st.session_state.authenticated = True
+            st.rerun()
+        else:
+            st.error("Contraseña incorrecta")
+    return False
+
+if not check_password():
+    st.stop()
+
 # ── Config ──────────────────────────────────────────────────────────────────
 TOKEN = st.secrets.get("META_ACCESS_TOKEN", "")
 AD_ACCOUNTS = {
