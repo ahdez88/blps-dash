@@ -177,17 +177,19 @@ def fetch_all_data():
     date_90_ago = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
 
     progress = st.progress(0, text="Cargando datos de Meta...")
-    for i, (account_id, account_name) in enumerate(AD_ACCOUNTS.items()):
-        progress.progress((i) / len(AD_ACCOUNTS), text=f"Cargando {account_name}...")
+    total_steps = len(AD_ACCOUNTS) * 2  # campaign insights + daily
 
-        # Monthly insights — full range
+    for i, (account_id, account_name) in enumerate(AD_ACCOUNTS.items()):
+        progress.progress((i * 2) / total_steps, text=f"Cargando campañas — {account_name}...")
+
+        # Campaign insights — DAILY granularity for flexible grouping
         insights = fetch_all_pages(
             f"{BASE_URL}/{account_id}/insights",
             {
                 "fields": "campaign_id,campaign_name,objective,spend,impressions,reach,clicks,actions",
                 "level": "campaign",
                 "time_range": json.dumps({"since": full_start, "until": full_end}),
-                "time_increment": "monthly",
+                "time_increment": 1,
                 "limit": 500,
                 "access_token": TOKEN,
             }
@@ -196,9 +198,11 @@ def fetch_all_data():
             row["_account"] = account_name
         all_insights.extend(insights)
 
-        time.sleep(2)
+        time.sleep(3)
 
-        # Daily insights (last 90 days) — account level to reduce API load
+        progress.progress((i * 2 + 1) / total_steps, text=f"Cargando tendencia diaria — {account_name}...")
+
+        # Daily insights (last 90 days) — account level for trend chart
         daily = fetch_all_pages(
             f"{BASE_URL}/{account_id}/insights",
             {
@@ -211,7 +215,7 @@ def fetch_all_data():
         )
         all_daily.extend(daily)
 
-        time.sleep(2)
+        time.sleep(3)
 
     progress.progress(1.0, text="Datos cargados!")
     return all_insights, all_daily
